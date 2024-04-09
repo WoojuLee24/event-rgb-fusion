@@ -4,10 +4,12 @@ import collections
 import numpy as np
 import time
 import math
+import os
 
 import torch
 import torch.optim as optim
 from torchvision import transforms
+from wandb_logger import WandbLogger
 
 from retinanet import model
 from retinanet.dataloader import CSVDataset_event, collater, Resizer, AspectRatioBasedSampler, \
@@ -32,26 +34,41 @@ def time_since(since):
 
 
 def main(args=None):
-    base_dir = '/home/abhishek/connect'
+    base_dir = '/ws/data/DSEC' #'/home/abhishek/connect'
     parser = argparse.ArgumentParser(description='Simple training script for training a RetinaNet network.')
 
     parser.add_argument('--dataset', default='csv', help='Dataset type, must be one of csv or coco.')
     parser.add_argument('--coco_path', help='Path to COCO directory')
-    parser.add_argument('--csv_train', default=f'./DSEC_detection_labels/labels_filtered_train.csv',
+    parser.add_argument('--csv_train', default=f'/ws/external/DSEC_detection_labels/labels_filtered_train.csv',
                         help='Path to file containing training annotations (see readme)')
-    parser.add_argument('--csv_classes', default=f'./DSEC_detection_labels/labels_filtered_map.csv',
+    parser.add_argument('--csv_classes', default=f'/ws/external/DSEC_detection_labels/labels_filtered_map.csv',
                         help='Path to file containing class list (see readme)')
     parser.add_argument('--csv_val', help='Path to file containing validation annotations (optional, see readme)')
-    parser.add_argument('--root_img',default=f'{base_dir}/DSEC/train/transformed_images',help='dir to root rgb images')
-    parser.add_argument('--root_event', default=f'{base_dir}/DSEC_events_img',help='dir to toot event files in dsec directory structure')
+    parser.add_argument('--root_img',default=f'{base_dir}/train', help='dir to root rgb images')
+    parser.add_argument('--root_event', default=f'{base_dir}/train', help='dir to root event files in dsec directory structure')
+    # parser.add_argument('--root_img',default=f'{base_dir}/train/transformed_images',help='dir to root rgb images')
+    # parser.add_argument('--root_event', default=f'{base_dir}/DSEC_events_img',help='dir to toot event files in dsec directory structure')
     parser.add_argument('--fusion', help='Type of fusion:1)early_fusion, fpn_fusion, multi-level', type=str, default='fpn_fusion')
     parser.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=50)
     parser.add_argument('--epochs', help='Number of epochs', type=int, default=60)
     parser.add_argument('--continue_training', help='load a pretrained file', default=False)
     parser.add_argument('--checkpoint', help='location of pretrained file', default='./csv_dropout_retinanet_63.pt')
+    parser.add_argument('--save', type=str, default='debug')
+    parser.add_argument('--wandb', action='store_true', default=False, help='log with wandb')
 
 
     parser = parser.parse_args(args)
+
+    if parser.wandb:
+        wandb_config = dict(project="event_fusion", entity='kaist-url-ai28', name=parser.save)
+        wandb_logger = WandbLogger(wandb_config, args)
+        wandb_logger.before_run()
+    else:
+        wandb_logger = None
+
+    save_dir = f'/ws/external/checkpoints/{parser.save}'
+    if not os.path.exists(save_dir)
+        os.makedirs(save_dir)
 
     if parser.dataset == 'csv':
 
@@ -61,7 +78,10 @@ def main(args=None):
         if parser.csv_classes is None:
             raise ValueError('Must provide --csv_classes when training on COCO,')
 
-        dataset_train = CSVDataset_event(train_file=parser.csv_train, class_list=parser.csv_classes,root_event_dir=parser.root_event,root_img_dir=parser.root_img,
+        dataset_train = CSVDataset_event(train_file=parser.csv_train,
+                                         class_list=parser.csv_classes,
+                                         root_event_dir=parser.root_event,
+                                         root_img_dir=parser.root_img,
                                          transform=transforms.Compose([Normalizer(), Resizer()]))
 
         if parser.csv_val is None:
@@ -75,10 +95,10 @@ def main(args=None):
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
     # sampler = AspectRatioBasedSampler(dataset_train, batch_size=2, drop_last=False)
-    dataloader_train = DataLoader(dataset_train, batch_size=8, num_workers=6, shuffle=True,collate_fn=collater)
+    dataloader_train = DataLoader(dataset_train, batch_size=8, num_workers=1, shuffle=True,collate_fn=collater)
     dataset_val1 = CSVDataset_event(train_file=f'{base_dir}/DSEC_detection_labels/events/labels_filtered_test.csv', class_list=parser.csv_classes,
                                     root_event_dir=parser.root_event,root_img_dir=parser.root_img, transform=transforms.Compose([Normalizer(), Resizer()]))
-    dataloader_val1 = DataLoader(dataset_val1 , batch_size=1, num_workers=6, shuffle=True,collate_fn=collater)
+    dataloader_val1 = DataLoader(dataset_val1 , batch_size=1, num_workers=1, shuffle=True,collate_fn=collater)
 
     if dataset_val is not None:
         sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
@@ -162,12 +182,16 @@ def main(args=None):
 
                 loss_hist.append(float(loss))
 
-                
+
                 if iter_num % 500 ==0:
                     print(
                         '[sensor fusion homographic] [{}], Epoch: {} | Iteration: {} | Classification loss: {:1.5f} | Regression loss: {:1.5f} | Running loss: {:1.5f}'.format(
                             time_since(start), epoch_num, iter_num, float(classification_loss), float(regression_loss), np.mean(loss_hist)))
                     epoch_loss.append(np.mean(loss_hist))
+
+                wandb_logger.wandb.log({'train/cls loss': classification_loss.detach()})
+                wandb_logger.wandb.log({'train/reg loss': regression_loss.detach()})
+                wandb_logger.wandb.log({'train/total loss': loss.detach()})
 
                 del classification_loss
                 del regression_loss
@@ -190,10 +214,12 @@ def main(args=None):
         scheduler.step(np.mean(epoch_loss))
 
         # torch.save(retinanet.module, '{}_retinanet_{}.pt'.format(parser.dataset, epoch_num))
-        if epoch_num % 5 ==0:
+        if epoch_num % 10 == 0:
             torch.save({'epoch': epoch_total, 'model_state_dict': retinanet.module.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
-                        'loss': np.append(epoch_loss_all,epoch_loss)}, f'{parser.dataset}_fpn_homographic_retinanet_retinanet101_{epoch_total}.pt')
+                        'loss': np.append(epoch_loss_all,epoch_loss)},
+                         f'{save_dir}/{epoch_total}.pt') # f'{parser.dataset}_fpn_homographic_retinanet_retinanet101_{epoch_total}.pt'
+
 
     # retinanet.eval()
 

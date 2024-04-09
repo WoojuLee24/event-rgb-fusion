@@ -150,7 +150,7 @@ class ClassificationModel(nn.Module):
 
         out2 = out1.view(batch_size, width, height, self.num_anchors, self.num_classes)
 
-        return out2.contiguous().view(x.shape[0], -1, self.num_classes)
+        return out2.contiguous().view(x.shape[0], -1, self.num_classes) # [B, width * height * num_anchors, num_classes)
 
 class ResNet_early_fusion(nn.Module):
 
@@ -319,7 +319,8 @@ class ResNet_fpn_fusion(nn.Module):
 
         #Event branch
         self.inplanes = 64
-        self.conv1_event = nn.Conv2d(5, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1_event = nn.Conv2d(15, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        # self.conv1_event = nn.Conv2d(5, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1_event = nn.BatchNorm2d(64)
         self.relu_event = nn.ReLU(inplace=True)
         self.maxpool_event = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)

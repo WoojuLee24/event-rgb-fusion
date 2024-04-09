@@ -56,6 +56,15 @@ class CSVDataset_event(Dataset):
         except ValueError as e:
             raise (ValueError('invalid CSV annotations file: {}: {}'.format(self.train_file, e)))
         self.image_names = list(self.image_data.keys())
+        self.image_names.sort()
+
+        for i, image_name in enumerate(self.image_names):
+            file = image_name.split('/')
+            event_file = os.path.join(self.event_dir, file[-3], 'rectified_events', file[-2], file[-1])
+
+            if not os.path.exists(event_file):
+                self.image_names.remove(image_name)
+
 
     def _parse(self, value, function, fmt):
         """
@@ -102,6 +111,12 @@ class CSVDataset_event(Dataset):
 
     def __getitem__(self, idx):
 
+        file = self.image_names[idx].split('/')
+        event_file = os.path.join(self.event_dir, file[-3], 'rectified_events', file[-2], file[-1])
+        if not os.path.exists(event_file):
+            print(f"file {event_file} does not exist, returning none")
+            return None
+
         img,img_rgb = self.load_image(idx)
         annot = self.load_annotations(idx)
         sample = {'img': img,'img_rgb': img_rgb, 'annot': annot}
@@ -112,17 +127,24 @@ class CSVDataset_event(Dataset):
 
     def load_image(self, image_index):
         # img = torch.load(self.image_names[image_index])
-        event_file = os.path.join(self.event_dir, self.image_names[image_index])
+        # event_file = os.path.join(self.event_dir, self.image_names[image_index])
+        file = self.image_names[image_index].split('/')
+        event_file = os.path.join(self.event_dir, file[-3], 'rectified_events', file[-2], file[-1])
+
+        # if not os.path.exists(event_file):
+        #     print(f"file {event_file} does not exist, returning none")
+        #     return None
+
         img = torch.from_numpy(np.load(event_file)['arr_0'])
-        img = img.permute(1,2,0)
+        img = img.permute(1, 2, 0)
         img = img.cpu().detach().numpy()
 
-        file = self.image_names[image_index].split('/')
-        img_file = os.path.join(self.img_dir,file[-3],'images/left/rectified',file[-1].replace('.npz','.png'))
+        # img_file = os.path.join(self.img_dir,file[-3],'images/left/rectified',file[-1].replace('.npz','.png'))
+        img_file = os.path.join(self.img_dir, file[-3], 'images/left/rectified', file[-1].replace('.npz','.png'))
         img_rgb = cv2.imread(img_file)
-        img_rgb = img_rgb.astype(np.float32)/255.0
+        img_rgb = img_rgb.astype(np.float32) / 255.0
 
-        return img,img_rgb
+        return img, img_rgb
 
 
     def load_annotations(self, image_index):
@@ -439,6 +461,53 @@ def collater(data):
     padded_imgs_rgb = padded_imgs_rgb.permute(0, 3, 1, 2)
 
     return {'img': padded_imgs, 'img_rgb':padded_imgs_rgb, 'annot': annot_padded, 'scale': scales}
+
+
+def my_collater(data):
+    imgs = [s['img'] for s in data]
+    imgs_rgb = [s['img_rgb'] for s in data]
+    annots = [s['annot'] for s in data]
+    # scales = [s['scales'] for s in data]
+    scales = [1 for idx, s in enumerate(data)]
+
+    widths = [int(s.shape[0]) for s in imgs]
+    heights = [int(s.shape[1]) for s in imgs]
+    widths_rgb = [int(s.shape[0]) for s in imgs_rgb]
+    heights_rgb = [int(s.shape[1]) for s in imgs_rgb]
+    batch_size = len(imgs)
+
+    max_width = np.array(widths).max()
+    max_height = np.array(heights).max()
+    max_width_rgb = np.array(widths_rgb).max()
+    max_height_rgb = np.array(heights_rgb).max()
+
+    padded_imgs = torch.zeros(batch_size, max_width, max_height, imgs[0].shape[2])
+    padded_imgs_rgb = torch.zeros(batch_size, max_width_rgb, max_height_rgb, imgs_rgb[0].shape[2])
+
+    for i in range(batch_size):
+        img = torch.tensor(imgs[i])
+        padded_imgs[i, :int(img.shape[0]), :int(img.shape[1]), :] = img
+        img_rgb = imgs_rgb[i]
+        padded_imgs_rgb[i, :int(img_rgb.shape[0]), :int(img_rgb.shape[1]), :] = img_rgb
+
+    max_num_annots = max(annot.shape[0] for annot in annots)
+
+    if max_num_annots > 0:
+
+        annot_padded = torch.ones((len(annots), max_num_annots, 5)) * -1
+
+        if max_num_annots > 0:
+            for idx, annot in enumerate(annots):
+                # print(annot.shape)
+                if annot.shape[0] > 0:
+                    annot_padded[idx, :annot.shape[0], :] = annot
+    else:
+        annot_padded = torch.ones((len(annots), 1, 5)) * -1
+
+    padded_imgs = padded_imgs.permute(0, 3, 1, 2)
+    padded_imgs_rgb = padded_imgs_rgb.permute(0, 3, 1, 2)
+
+    return {'img': padded_imgs, 'img_rgb': padded_imgs_rgb, 'annot': annot_padded, 'scale': scales}
 
 class Resizer(object):
     """Convert ndarrays in sample to Tensors."""
