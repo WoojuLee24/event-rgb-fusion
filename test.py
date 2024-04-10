@@ -38,18 +38,18 @@ def main(args=None):
 
     parser.add_argument('--dataset', default='csv', help='Dataset type, must be one of csv or coco.')
     parser.add_argument('--coco_path', help='Path to COCO directory')
-    parser.add_argument('--csv_train', default='/home/abhishek/connect/DSEC_detection_labels/events/labels_filtered_train.csv',
+    parser.add_argument('--csv_train', default=f'/ws/external/DSEC_detection_labels/labels_filtered_train.csv',
                         help='Path to file containing training annotations (see readme)')
-    parser.add_argument('--csv_classes', default='/home/abhishek/connect/DSEC_detection_labels/events/labels_filtered_map.csv',
+    parser.add_argument('--csv_classes', default='/ws/external/DSEC_detection_labels/labels_filtered_map.csv',
                         help='Path to file containing class list (see readme)')
     parser.add_argument('--csv_val', help='Path to file containing validation annotations (optional, see readme)')
-    parser.add_argument('--root_img',default='/home/abhishek/connect/DSEC/train/transformed_images',help='dir to root rgb images in dsec format')
-    parser.add_argument('--root_event', default='/home/abhishek/connect/DSEC_events_img',help='dir to toot event files in dsec directory structure')
-    parser.add_argument('--fusion', help='Type of fusion:1)early, fpn_fusion, multi-level', type=str, default='early_fusion')
-    parser.add_argument('--checkpoint', help='location of pretrained file', default='./csv_early_homographic_gray_retinanet_retinanet_75.pt')
-    parser.add_argument('--csv_test', default='/home/abhishek/connect/DSEC_detection_labels/events/labels_filtered_test.csv',
+    parser.add_argument('--root_img', default='/ws/data/DSEC/train',help='dir to root rgb images in dsec format')
+    parser.add_argument('--root_event', default='/ws/data/DSEC/train',help='dir to toot event files in dsec directory structure')
+    parser.add_argument('--fusion', help='Type of fusion:1)early, fpn_fusion, multi-level', type=str, default='fpn_fusion')
+    parser.add_argument('--checkpoint', help='location of pretrained file', default='/ws/external/checkpoints/debug.pt')
+    parser.add_argument('--csv_test', default='/ws/external/DSEC_detection_labels/labels_filtered_test.csv',
                         help='Path to file containing training annotations (see readme)')
-    parser.add_argument('--eval_corruption', help='evaluate on the coorupted images', type=bool, default=True)
+    parser.add_argument('--eval_corruption', action='store_true', help='evaluate on the coorupted images')
     parser.add_argument('--corruption_group', help='corruption group number', type=int, default=0)
     parser.add_argument('--event_type', help='voxel or gray', type=str, default='gray')
     
@@ -58,7 +58,7 @@ def main(args=None):
 
 
     parser = parser.parse_args(args)
-    dataset_train = CSVDataset_event(train_file=parser.csv_train, class_list=parser.csv_classes,root_event_dir=parser.root_event,root_img_dir=parser.root_img,
+    dataset_train = CSVDataset_event(train_file=parser.csv_train, class_list=parser.csv_classes, root_event_dir=parser.root_event, root_img_dir=parser.root_img,
                                          transform=transforms.Compose([Normalizer(), Resizer()]))
     dataloader_train = DataLoader(dataset_train, batch_size=8, num_workers=0, shuffle=True,collate_fn=collater)
     
@@ -71,11 +71,15 @@ def main(args=None):
         raise ValueError('Unsupported model fusion')
 
     use_gpu = True
-    checkpoint = torch.load(parser.checkpoint)
-    retinanet.load_state_dict(checkpoint['model_state_dict'])
-    epoch_loss_all = checkpoint['loss']
-    epoch_total = checkpoint['epoch']
-    print(f'testing {parser.fusion} model')
+    if parser.checkpoint == '/ws/external/checkpoints/debug.pt':
+        pass
+        print(f'testing {parser.fusion} debug model')
+    else:
+        checkpoint = torch.load(parser.checkpoint)
+        retinanet.load_state_dict(checkpoint['model_state_dict'])
+        epoch_loss_all = checkpoint['loss']
+        epoch_total = checkpoint['epoch']
+        print(f'testing {parser.fusion} model')
     retinanet.eval()
 
     if use_gpu:
@@ -112,7 +116,7 @@ def main(args=None):
             Average_precisions = {'person':[],'large_vehicle':[],'car':[]}
             start_c = time.time()
             for severity in severity_list:
-                corruption_folder = f'/mnt/8tb-disk/DATASETS/DSEC/corruptions/{corruption}/severity_{severity}'
+                corruption_folder = f'/ws/data/DSEC-C/test/corruptions/{corruption}/severity_{severity}'
                 # save_detect_folder = os.path.join(root_save_detect_folder,f'{parser.fusion}_{parser.event_type}',corruption,f'severity_{severity}')
                 save_detect_folder = os.path.join('/home/abhishek/save_detection/early_homography_voxel',corruption,f'severity_{severity}')
                 
@@ -121,12 +125,12 @@ def main(args=None):
 
                 if parser.event_type == 'voxel':
                     dataset_val1 = CSVDataset_event(train_file= parser.csv_test, class_list=parser.csv_classes,
-                                            root_event_dir=parser.root_event,root_img_dir=parser.root_img, transform=transforms.Compose([Normalizer(), Resizer()]))
+                                            root_event_dir=parser.root_event+'/train',root_img_dir=parser.root_img+'/train', transform=transforms.Compose([Normalizer(), Resizer()]))
 
-                else:
-                    parser.root_event = f'/mnt/8tb-disk/DATASETS/DSEC/e2vid'
-                    dataset_val1 = CSVDataset_gray(train_file= parser.csv_test, class_list=parser.csv_classes,
-                                            root_event_dir=parser.root_event,root_img_dir=parser.root_img, transform=transforms.Compose([Normalizer(), Resizer()]))
+                # else:
+                #     parser.root_event = f'/mnt/8tb-disk/DATASETS/DSEC/e2vid'
+                #     dataset_val1 = CSVDataset_gray(train_file= parser.csv_test, class_list=parser.csv_classes,
+                #                             root_event_dir=parser.root_event,root_img_dir=parser.root_img, transform=transforms.Compose([Normalizer(), Resizer()]))
 
                 start = time.time()
                 # print(f'{parser.fusion}, {corruption}, severity_{severity}')
@@ -164,7 +168,7 @@ def main(args=None):
 
         if parser.event_type == 'voxel':
             dataset_val1 = CSVDataset_event(train_file= parser.csv_test, class_list=parser.csv_classes,
-                                            root_event_dir=parser.root_event,root_img_dir=parser.root_img, transform=transforms.Compose([Normalizer(), Resizer()]))
+                                            root_event_dir=parser.root_event+'/test', root_img_dir=parser.root_img+'/test', transform=transforms.Compose([Normalizer(), Resizer()]))
         else:
             parser.root_event = f'/mnt/8tb-disk/DATASETS/DSEC/e2vid'
             dataset_val1 = CSVDataset_gray(train_file= parser.csv_test, class_list=parser.csv_classes,
@@ -173,11 +177,11 @@ def main(args=None):
         start = time.time()
         # print(f'sensor fusion, {corruption}')
         # save_detect_folder = os.path.join(root_save_detect_folder,f'{parser.fusion}_{parser.event_type}','evaluation')
-        save_detect_folder = '/home/abhishek/save_detection/early_homography_voxel/evaluation'
+        save_detect_folder = '/ws/external/evaluations'
         os.makedirs(save_detect_folder,exist_ok=True)
         if coco:
-            mAP = csv_eval.evaluate_coco_map(dataset_val1, retinanet,save_detection = False,save_folder = save_detect_folder,
-                                load_detection = False)
+            mAP = csv_eval.evaluate_coco_map(dataset_val1, retinanet, save_detection=False, save_folder=save_detect_folder,
+                                load_detection=False)
             Average_precisions['person'].append(mAP[0])
             Average_precisions['large_vehicle'].append(mAP[1])
             Average_precisions['car'].append(mAP[2])

@@ -6,7 +6,7 @@ import os
 import matplotlib.pyplot as plt
 import torch
 import pickle
-
+from tqdm import tqdm
 
 
 def compute_overlap(a, b):
@@ -82,7 +82,7 @@ def _get_detections(dataset, retinanet, score_threshold=0.05, max_detections=100
     
     with torch.no_grad():
 
-        for index in range(len(dataset)):
+        for index in tqdm(range(len(dataset))):
             data = dataset[index]
             try:
                 scale = data['scales']

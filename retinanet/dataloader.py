@@ -117,7 +117,7 @@ class CSVDataset_event(Dataset):
             print(f"file {event_file} does not exist, returning none")
             return None
 
-        img,img_rgb = self.load_image(idx)
+        img, img_rgb = self.load_image(idx)
         annot = self.load_annotations(idx)
         sample = {'img': img,'img_rgb': img_rgb, 'annot': annot}
         if self.transform:
