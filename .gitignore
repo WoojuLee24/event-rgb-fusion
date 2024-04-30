@@ -1,0 +1,3 @@
+# ignore pycache
+retinanet/__pycache__/*
+*.pyc
