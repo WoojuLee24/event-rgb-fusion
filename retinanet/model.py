@@ -6,6 +6,7 @@ from torchvision.ops import nms
 from retinanet.utils import BasicBlock, Bottleneck, BBoxTransform, ClipBoxes
 from retinanet.anchors import Anchors
 from retinanet import losses
+from est.models import ESTNet
 import random
 
 model_urls = {
@@ -414,6 +415,182 @@ class ResNet_fpn_fusion(nn.Module):
         x_event = self.conv1_event(img_batch_event)
         x_event = self.bn1_event(x_event)
         x_event = self.relu_event(x_event)
+        x_event = self.maxpool_event(x_event)   # resnet50: [b, 15, 480, 640] -> [b, 64, 120, 160]
+
+        x1_event = self.layer1_event(x_event)   # [b, 256, 120, 160]
+        x2_event = self.layer2_event(x1_event)  # [b, 512, 60, 80]
+        x3_event = self.layer3_event(x2_event)  # [b, 1024, 30, 40]
+        x4_event = self.layer4_event(x3_event)  # [b, 2048, 15, 20]
+
+        x2 = torch.cat((x2_event, x2_rgb),1)
+        x3 = torch.cat((x3_event, x3_rgb), 1)
+        x4 = torch.cat((x4_event, x4_rgb), 1)
+        features = self.fpn([x2, x3, x4])
+
+        regression = torch.cat([self.regressionModel(feature) for feature in features], dim=1)
+
+        classification = torch.cat([self.classificationModel(feature) for feature in features], dim=1)
+
+        anchors = self.anchors(img_batch_rgb)
+
+        if self.training:
+            return self.focalLoss(classification, regression, anchors, annotations)
+        else:
+            transformed_anchors = self.regressBoxes(anchors, regression)
+            transformed_anchors = self.clipBoxes(transformed_anchors, img_batch_rgb)
+
+            finalResult = [[], [], []]
+
+            finalScores = torch.Tensor([])
+            finalAnchorBoxesIndexes = torch.Tensor([]).long()
+            finalAnchorBoxesCoordinates = torch.Tensor([])
+
+            if torch.cuda.is_available():
+                finalScores = finalScores.cuda()
+                finalAnchorBoxesIndexes = finalAnchorBoxesIndexes.cuda()
+                finalAnchorBoxesCoordinates = finalAnchorBoxesCoordinates.cuda()
+
+            for i in range(classification.shape[2]):
+                scores = torch.squeeze(classification[:, :, i])
+                scores_over_thresh = (scores > 0.05)
+                if scores_over_thresh.sum() == 0:
+                    # no boxes to NMS, just continue
+                    continue
+
+                scores = scores[scores_over_thresh]
+                anchorBoxes = torch.squeeze(transformed_anchors)
+                anchorBoxes = anchorBoxes[scores_over_thresh]
+                anchors_nms_idx = nms(anchorBoxes, scores, 0.5)
+
+                finalResult[0].extend(scores[anchors_nms_idx])
+                finalResult[1].extend(torch.tensor([i] * anchors_nms_idx.shape[0]))
+                finalResult[2].extend(anchorBoxes[anchors_nms_idx])
+
+                finalScores = torch.cat((finalScores, scores[anchors_nms_idx]))
+                finalAnchorBoxesIndexesValue = torch.tensor([i] * anchors_nms_idx.shape[0])
+                if torch.cuda.is_available():
+                    finalAnchorBoxesIndexesValue = finalAnchorBoxesIndexesValue.cuda()
+
+                finalAnchorBoxesIndexes = torch.cat((finalAnchorBoxesIndexes, finalAnchorBoxesIndexesValue))
+                finalAnchorBoxesCoordinates = torch.cat((finalAnchorBoxesCoordinates, anchorBoxes[anchors_nms_idx]))
+
+            return [finalScores, finalAnchorBoxesIndexes, finalAnchorBoxesCoordinates]
+
+
+class ResNet_fpn_fusion_est(nn.Module):
+
+    def __init__(self, num_classes, block, layers):
+        self.inplanes = 64
+        super(ResNet_fpn_fusion_est, self).__init__()
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.dropout = nn.Dropout(0.2)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.layer1 = self._make_layer(block, 64, layers[0])
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+
+        #Event branch
+        self.inplanes = 64
+        self.conv1_event = nn.Conv2d(18, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        # self.conv1_event = nn.Conv2d(5, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1_event = nn.BatchNorm2d(64)
+        self.relu_event = nn.ReLU(inplace=True)
+        self.maxpool_event = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.layer1_event = self._make_layer(block, 64, layers[0])
+        self.layer2_event = self._make_layer(block, 128, layers[1], stride=2)
+        self.layer3_event = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer4_event = self._make_layer(block, 512, layers[3], stride=2)
+        self.est_model = ESTNet()
+
+        if block == BasicBlock:
+            fpn_sizes = [self.layer2[layers[1] - 1].conv2.out_channels, self.layer3[layers[2] - 1].conv2.out_channels,
+                         self.layer4[layers[3] - 1].conv2.out_channels]
+        elif block == Bottleneck:
+            fpn_sizes = [self.layer2[layers[1] - 1].conv3.out_channels, self.layer3[layers[2] - 1].conv3.out_channels,
+                         self.layer4[layers[3] - 1].conv3.out_channels]
+        else:
+            raise ValueError(f"Block type {block} not understood")
+
+        self.fpn = PyramidFeatures(2*fpn_sizes[0], 2*fpn_sizes[1], 2*fpn_sizes[2])
+
+        self.regressionModel = RegressionModel(256)
+        self.classificationModel = ClassificationModel(256, num_classes=num_classes)
+
+        self.anchors = Anchors()
+
+        self.regressBoxes = BBoxTransform()
+
+        self.clipBoxes = ClipBoxes()
+
+        self.focalLoss = losses.FocalLoss()
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+
+        prior = 0.01
+
+        self.classificationModel.output.weight.data.fill_(0)
+        self.classificationModel.output.bias.data.fill_(-math.log((1.0 - prior) / prior))
+
+        self.regressionModel.output.weight.data.fill_(0)
+        self.regressionModel.output.bias.data.fill_(0)
+
+        self.freeze_bn()
+
+    def _make_layer(self, block, planes, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes * block.expansion,
+                          kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes * block.expansion),
+            )
+
+        layers = [block(self.inplanes, planes, stride, downsample)]
+        self.inplanes = planes * block.expansion
+        for i in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+
+        return nn.Sequential(*layers)
+
+    def freeze_bn(self):
+        '''Freeze BatchNorm layers.'''
+        for layer in self.modules():
+            if isinstance(layer, nn.BatchNorm2d):
+                layer.eval()
+
+    def forward(self, inputs):
+
+        if self.training:
+            img_batch_rgb, img_batch_event,annotations = inputs
+            if random.uniform(0, 1) < 0.15:
+                img_batch_rgb.zero_()
+        else:
+            img_batch_rgb, img_batch_event = inputs
+
+        x_rgb = self.conv1(img_batch_rgb)
+        x_rgb = self.bn1(x_rgb)
+        x_rgb = self.relu(x_rgb)
+        x_rgb = self.maxpool(x_rgb)
+
+        x1_rgb = self.layer1(x_rgb)
+        x2_rgb = self.layer2(x1_rgb)
+        x3_rgb = self.layer3(x2_rgb)
+        x4_rgb = self.layer4(x3_rgb)
+
+        #Event stream
+        vox_cropped = self.est_model._forward_impl(img_batch_event)
+        x_event = self.conv1_event(vox_cropped)
+        x_event = self.bn1_event(x_event)
+        x_event = self.relu_event(x_event)
         x_event = self.maxpool_event(x_event)
 
         x1_event = self.layer1_event(x_event)
@@ -799,12 +976,15 @@ def resnet50(num_classes, fusion_model, pretrained=False, **kwargs):
         model = ResNet_early_fusion(num_classes, Bottleneck, [3, 4, 6, 3], **kwargs)
     if fusion_model == 'fpn_fusion':
         model = ResNet_fpn_fusion(num_classes, Bottleneck, [3, 4, 6, 3], **kwargs)
+    if fusion_model == 'fpn_fusion_est':
+        model = ResNet_fpn_fusion_est(num_classes, Bottleneck, [3, 4, 6, 3], **kwargs)
     if fusion_model == 'event':
         model = ResNet(num_classes, Bottleneck, [3, 4, 6, 3], **kwargs)
     if fusion_model == 'rgb':
         model = ResNet_rgb(num_classes, Bottleneck, [3, 4, 6, 3], **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet50'], model_dir='.'), strict=False)
+        # model.load_state_dict(torch.load('/ws/external/checkpoints/pretrained/resnet50-19c8e357.pth'))
     return model
 
 def resnet101(num_classes,fusion_model, pretrained=False, **kwargs):

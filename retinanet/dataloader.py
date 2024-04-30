@@ -463,6 +463,59 @@ def collater(data):
     return {'img': padded_imgs, 'img_rgb':padded_imgs_rgb, 'annot': annot_padded, 'scale': scales}
 
 
+def collater_raw(data):
+    events = [s['img'] for s in data]
+    imgs_rgb = [s['img_rgb'] for s in data]
+    annots = [s['annot'] for s in data]
+    # scales = [s['scales'] for s in data]
+    scales = [1 for idx, s in enumerate(data)]
+
+    # widths = [int(s.shape[0]) for s in imgs]
+    # heights = [int(s.shape[1]) for s in imgs]
+    widths_rgb = [int(s.shape[0]) for s in imgs_rgb]
+    heights_rgb = [int(s.shape[1]) for s in imgs_rgb]
+    batch_size = len(imgs_rgb)
+
+    # max_width = np.array(widths).max()
+    # max_height = np.array(heights).max()
+    max_width_rgb = np.array(widths_rgb).max()
+    max_height_rgb = np.array(heights_rgb).max()
+
+    # padded_imgs = torch.zeros(batch_size, max_width, max_height, imgs[0].shape[2])
+    padded_imgs_rgb = torch.zeros(batch_size, max_width_rgb, max_height_rgb, imgs_rgb[0].shape[2])
+
+    events_batched = []
+    for i in range(batch_size):
+        event = torch.tensor(events[i])
+        event_batched = np.concatenate([event, i * np.ones((len(event), 1), dtype=np.float32)], 1)         # padded_imgs[i, :int(img.shape[0]), :int(img.shape[1]), :] = img
+        events_batched.append(event_batched)
+
+        img_rgb = imgs_rgb[i]
+        padded_imgs_rgb[i, :int(img_rgb.shape[0]), :int(img_rgb.shape[1]), :] = img_rgb
+
+    events_batched = torch.from_numpy(np.concatenate(events_batched, 0))
+
+    max_num_annots = max(annot.shape[0] for annot in annots)
+
+    if max_num_annots > 0:
+
+        annot_padded = torch.ones((len(annots), max_num_annots, 5)) * -1
+
+        if max_num_annots > 0:
+            for idx, annot in enumerate(annots):
+                # print(annot.shape)
+                if annot.shape[0] > 0:
+                    annot_padded[idx, :annot.shape[0], :] = annot
+    else:
+        annot_padded = torch.ones((len(annots), 1, 5)) * -1
+
+    # padded_imgs = padded_imgs.permute(0, 3, 1, 2)
+    padded_imgs_rgb = padded_imgs_rgb.permute(0, 3, 1, 2)
+
+    return {'img': events_batched, 'img_rgb': padded_imgs_rgb, 'annot': annot_padded, 'scale': scales}
+
+
+
 def my_collater(data):
     imgs = [s['img'] for s in data]
     imgs_rgb = [s['img_rgb'] for s in data]

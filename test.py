@@ -116,7 +116,7 @@ def main(args=None):
             Average_precisions = {'person':[],'large_vehicle':[],'car':[]}
             start_c = time.time()
             for severity in severity_list:
-                corruption_folder = f'/ws/data/DSEC-C/test/corruptions/{corruption}/severity_{severity}'
+                corruption_folder = f'/ws/data/DSEC/test-c/{corruption}/severity_{severity}'
                 # save_detect_folder = os.path.join(root_save_detect_folder,f'{parser.fusion}_{parser.event_type}',corruption,f'severity_{severity}')
                 save_detect_folder = os.path.join('/home/abhishek/save_detection/early_homography_voxel',corruption,f'severity_{severity}')
                 

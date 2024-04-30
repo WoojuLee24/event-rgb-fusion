@@ -13,9 +13,9 @@ from torchvision import transforms
 from wandb_logger import WandbLogger
 
 from retinanet import model
-from retinanet.dataloader import CSVDataset_event, collater, Resizer, AspectRatioBasedSampler, \
-    Augmenter, \
-    Normalizer
+from retinanet.dataloader import CSVDataset_event, collater, collater_raw, \
+    Resizer, AspectRatioBasedSampler, Augmenter, Normalizer
+from retinanet.dataloader_raw import CSVDataset_event_raw
 from torch.utils.data import DataLoader
 
 # from retinanet import coco_eval
@@ -38,7 +38,11 @@ def main(args=None):
     base_dir = '/ws/data/DSEC' #'/home/abhishek/connect'
     parser = argparse.ArgumentParser(description='Simple training script for training a RetinaNet network.')
 
-    parser.add_argument('--dataset', default='csv', help='Dataset type, must be one of csv or coco.')
+    parser.add_argument('--dataset', default='csv', help='Dataset type, must be one of csv or coco')
+    parser.add_argument('--batch_size', default=4, type=int)
+    parser.add_argument('--num_worker', default=4, type=int)
+    parser.add_argument('--event_type', default='voxel', help='Event type, voxel grid or raw events')
+    parser.add_argument('--event_k', default=1, type=int, help='Extract event k')
     parser.add_argument('--coco_path', help='Path to COCO directory')
     parser.add_argument('--csv_train', default=f'/ws/external/DSEC_detection_labels/labels_filtered_train.csv',
                         help='Path to file containing training annotations (see readme)')
@@ -57,6 +61,7 @@ def main(args=None):
     parser.add_argument('--epochs', help='Number of epochs', type=int, default=60)
     parser.add_argument('--continue_training', help='load a pretrained file', default=False)
     parser.add_argument('--checkpoint', help='location of pretrained file', default='./csv_dropout_retinanet_63.pt')
+    parser.add_argument('--pretrained', action='store_true', help='pretrained model')
     parser.add_argument('--save', type=str, default='debug')
     parser.add_argument('--wandb', action='store_true', default=False, help='log with wandb')
 
@@ -82,36 +87,53 @@ def main(args=None):
         if parser.csv_classes is None:
             raise ValueError('Must provide --csv_classes when training on COCO,')
 
-        dataset_train = CSVDataset_event(train_file=parser.csv_train,
-                                         class_list=parser.csv_classes,
-                                         root_event_dir=parser.root_event,
-                                         root_img_dir=parser.root_img,
-                                         transform=transforms.Compose([Normalizer(), Resizer()]))
+        if parser.event_type == 'voxel':
+            dataset_train = CSVDataset_event(train_file=parser.csv_train,
+                                             class_list=parser.csv_classes,
+                                             root_event_dir=parser.root_event,
+                                             root_img_dir=parser.root_img,
+                                             transform=transforms.Compose([Normalizer(), Resizer()]))
 
-        # if parser.csv_val is None:
-        #     dataset_val = None
-        #     print('No validati`on annotations provided.')
-        # else:
+            # if parser.csv_val is None:
+            #     dataset_val = None
+            #     print('No validati`on annotations provided.')
+            # else:
 
-        # dataset_val = CSVDataset_event(train_file=parser.csv_val,
-        #                                class_list=parser.csv_classes,
-        #                                root_event_dir=parser.root_event+'/val',
-        #                                root_img_dir=parser.root_img+'/val',
-        #                                transform=transforms.Compose([Normalizer(), Resizer()]))
-        dataset_test = CSVDataset_event(train_file=parser.csv_test,
-                                       class_list=parser.csv_classes,
-                                       root_event_dir=parser.root_event,
-                                       root_img_dir=parser.root_img,
-                                       transform=transforms.Compose([Normalizer(), Resizer()]))
+            # dataset_val = CSVDataset_event(train_file=parser.csv_val,
+            #                                class_list=parser.csv_classes,
+            #                                root_event_dir=parser.root_event+'/val',
+            #                                root_img_dir=parser.root_img+'/val',
+            #                                transform=transforms.Compose([Normalizer(), Resizer()]))
+            dataset_test = CSVDataset_event(train_file=parser.csv_test,
+                                           class_list=parser.csv_classes,
+                                           root_event_dir=parser.root_event,
+                                           root_img_dir=parser.root_img,
+                                           transform=transforms.Compose([Normalizer(), Resizer()]))
 
+            collater_fn = collater
 
+        elif parser.event_type == 'raw':
+            dataset_train = CSVDataset_event_raw(train_file=parser.csv_train,
+                                                 class_list=parser.csv_classes,
+                                                 root_event_dir=parser.root_event,
+                                                 root_img_dir=parser.root_img,
+                                                 transform=transforms.Compose([Normalizer(), Resizer()]),
+                                                 event_k=parser.event_k)
+
+            dataset_test = CSVDataset_event_raw(train_file=parser.csv_test,
+                                                class_list=parser.csv_classes,
+                                                root_event_dir=parser.root_event,
+                                                root_img_dir=parser.root_img,
+                                                transform=transforms.Compose([Normalizer(), Resizer()]),
+                                                event_k=parser.event_k)
+            collater_fn = collater_raw
 
     else:
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
     # sampler = AspectRatioBasedSampler(dataset_train, batch_size=2, drop_last=False)
-    dataloader_train = DataLoader(dataset_train, batch_size=8, num_workers=1, shuffle=True, collate_fn=collater)
-    dataloader_test = DataLoader(dataset_test, batch_size=1, num_workers=1, shuffle=True, collate_fn=collater)
+    dataloader_train = DataLoader(dataset_train, batch_size=parser.batch_size, num_workers=parser.num_worker, shuffle=True, collate_fn=collater_fn)
+    dataloader_test = DataLoader(dataset_test, batch_size=1, num_workers=parser.num_worker, shuffle=True, collate_fn=collater_fn)
 
     # dataset_val1 = CSVDataset_event(train_file=f'{base_dir}/DSEC_detection_labels/events/labels_filtered_test.csv', class_list=parser.csv_classes,
     #                                 root_event_dir=parser.root_event,root_img_dir=parser.root_img, transform=transforms.Compose([Normalizer(), Resizer()]))
@@ -122,12 +144,12 @@ def main(args=None):
     #     dataloader_val = DataLoader(dataset_val, num_workers=1, collate_fn=collater, batch_sampler=sampler_val)
 
     # Create the model
-    list_models = ['early_fusion','fpn_fusion', 'event', 'rgb']
+    list_models = ['early_fusion','fpn_fusion', 'event', 'rgb', 'fpn_fusion_est']
     if parser.fusion in  list_models:
         if parser.depth == 50:
-            retinanet = model.resnet50(num_classes=dataset_train.num_classes(),fusion_model=parser.fusion,pretrained=False)
+            retinanet = model.resnet50(num_classes=dataset_train.num_classes(), fusion_model=parser.fusion, pretrained=parser.pretrained)
         if parser.depth == 101:
-            retinanet = model.resnet101(num_classes=dataset_train.num_classes(),fusion_model=parser.fusion,pretrained=False)
+            retinanet = model.resnet101(num_classes=dataset_train.num_classes(), fusion_model=parser.fusion, pretrained=parser.pretrained)
     else:
         raise ValueError('Unsupported model fusion')
 
@@ -169,7 +191,9 @@ def main(args=None):
     # mAP = csv_eval.evaluate(dataset_val1, retinanet)
     print(time_since(start))
     epoch_loss = []
-    for epoch_num in tqdm(range(parser.epochs)):
+
+
+    for epoch_num in range(parser.epochs):
 
         retinanet.train()
         retinanet.module.freeze_bn()
@@ -177,7 +201,7 @@ def main(args=None):
 
         # mAP = csv_eval.evaluate(dataset_test, retinanet, save_detection=False, save_folder=save_dir, save_path=save_dir)
 
-        for iter_num, data in enumerate(dataloader_train):
+        for iter_num, data in enumerate(tqdm(dataloader_train)):
             try:
                 classification_loss, regression_loss = retinanet([data['img_rgb'],data['img'].cuda().float(),data['annot']])
 
@@ -232,8 +256,16 @@ def main(args=None):
         #     mAP = csv_eval.evaluate(dataset_val, retinanet)
 
         ## evaluation ##
-        mAP = csv_eval.evaluate_coco_map(dataset_test, retinanet, save_detection=False, save_folder=save_dir,
-                                         save_path=save_dir)
+        # mAP = csv_eval.evaluate_coco_map(dataset_test, retinanet, save_detection=False, save_folder=save_dir,
+        #                                  save_path=save_dir)
+
+        if parser.event_type == 'raw':
+            mAP = csv_eval.evaluate_coco_map(dataloader_test, retinanet, save_detection=False, save_folder=save_dir,
+                                             save_path=save_dir, event_type=parser.event_type)
+        else:
+            mAP = csv_eval.evaluate_coco_map(dataset_test, retinanet, save_detection=False, save_folder=save_dir,
+                                             save_path=save_dir, event_type=parser.event_type)
+
         wandb_logger.wandb.log({'test/person': np.mean(mAP[0])})
         wandb_logger.wandb.log({'test/large_vehicle': np.mean(mAP[1])})
         wandb_logger.wandb.log({'test/car': np.mean(mAP[2])})
