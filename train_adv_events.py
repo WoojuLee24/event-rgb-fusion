@@ -13,9 +13,11 @@ from torchvision import transforms
 from wandb_logger import WandbLogger
 
 from retinanet import model
+from adv.attacker import PGDAttacker
 from retinanet.dataloader import CSVDataset_event, collater, collater_raw, \
     Resizer, AspectRatioBasedSampler, Augmenter, Normalizer
 from retinanet.dataloader_raw import CSVDataset_event_raw
+from retinanet.losses import FocalLoss
 from torch.utils.data import DataLoader
 
 # from retinanet import coco_eval
@@ -64,6 +66,24 @@ def main(args=None):
     parser.add_argument('--pretrained', action='store_true', help='pretrained model')
     parser.add_argument('--save', type=str, default='debug')
     parser.add_argument('--wandb', action='store_true', default=False, help='log with wandb')
+
+    # est network architectures
+    parser.add_argument("--voxel_channel", type=int, default=9)
+    parser.add_argument("--value_layer", type=str, default="ValueLayer")
+    parser.add_argument("--projection", type=str, default=None,
+                        choices=['none', 'polarity', 'average_time', 'recent_time', 'time_count'])
+
+    # adv attack options
+    parser.add_argument("--adv", action='store_true', help='adversarial training or not')
+    parser.add_argument("--attack_mode", type=str, default='shifting',
+                        choices=['shifting_event', 'generating_event', 'shifting_generating_event'])
+    parser.add_argument("--adv_test", action='store_true', help='adversarial test or not')
+    parser.add_argument("--targeted", type=bool, default=False)
+    parser.add_argument("--epsilon", type=float, default=1.0)
+    parser.add_argument("--step_size", type=float, default=0.5)
+    parser.add_argument("--num_iter", type=int, default=3)
+    parser.add_argument("--null", type=int, default=5)
+    parser.add_argument("--topp", type=float, default=1)
 
 
     parser = parser.parse_args(args)
@@ -126,14 +146,32 @@ def main(args=None):
     dataloader_test = DataLoader(dataset_test, batch_size=1, num_workers=parser.num_worker, shuffle=True, collate_fn=collater_fn)
 
     # Create the model
-    list_models = ['early_fusion','fpn_fusion', 'event', 'rgb', 'fpn_fusion_est']
-    if parser.fusion in  list_models:
+    list_models = ['early_fusion','fpn_fusion', 'event', 'rgb', 'fpn_fusion_est', 'adv_fpn_fusion_est']
+    if parser.fusion in list_models:
         if parser.depth == 50:
-            retinanet = model.resnet50(num_classes=dataset_train.num_classes(), fusion_model=parser.fusion, pretrained=parser.pretrained)
+            if parser.fusion == 'adv_fpn_fusion_est':
+                voxel_dimension = (parser.voxel_channel, 480, 640)
+                retinanet = model.resnet50(num_classes=dataset_train.num_classes(), fusion_model=parser.fusion, pretrained=parser.pretrained,
+                                           voxel_dimension=voxel_dimension, value_layer=parser.value_layer, projection=parser.projection,
+                                           adv=parser.adv, adv_test=parser.adv_test, attack_mode=parser.attack_mode,
+                                           )
+
+            else:
+                retinanet = model.resnet50(num_classes=dataset_train.num_classes(), fusion_model=parser.fusion, pretrained=parser.pretrained)
+
+
         if parser.depth == 101:
             retinanet = model.resnet101(num_classes=dataset_train.num_classes(), fusion_model=parser.fusion, pretrained=parser.pretrained)
     else:
         raise ValueError('Unsupported model fusion')
+
+    if parser.adv or parser.adv_test:
+        voxel_dimension = (parser.voxel_channel, 480, 640)
+        attacker = PGDAttacker(num_iter=parser.num_iter, epsilon=parser.epsilon, step_size=parser.step_size,
+                               topp=parser.topp, null=parser.null,
+                               num_classes=dataset_train.num_classes(), voxel_dimension=voxel_dimension,
+                               targeted=parser.targeted)
+        retinanet.set_attacker(attacker)
 
     use_gpu = True
     if parser.continue_training:
@@ -161,6 +199,8 @@ def main(args=None):
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
 
+    focal_loss = FocalLoss()
+
     loss_hist = collections.deque(maxlen=100)
 
     retinanet.train()
@@ -183,48 +223,70 @@ def main(args=None):
 
         # mAP = csv_eval.evaluate(dataset_test, retinanet, save_detection=False, save_folder=save_dir, save_path=save_dir)
 
+        # with torch.no_grad():
+        #     if parser.event_type == 'raw':
+        #         mAP = csv_eval.evaluate_coco_map(dataset_test, retinanet, save_detection=False, save_folder=save_dir,
+        #                                          save_path=save_dir, event_type=parser.event_type)
+        #     else:
+        #         mAP = csv_eval.evaluate_coco_map(dataset_test, retinanet, save_detection=False, save_folder=save_dir,
+        #                                          save_path=save_dir, event_type=parser.event_type)
+        #
+        #     if parser.wandb:
+        #         wandb_logger.wandb.log({'test/person': np.mean(mAP[0])})
+        #         wandb_logger.wandb.log({'test/large_vehicle': np.mean(mAP[1])})
+        #         wandb_logger.wandb.log({'test/car': np.mean(mAP[2])})
+        #         wandb_logger.wandb.log({'test/mAP': np.mean(np.array(mAP[0] + mAP[1] + mAP[2]) / 3)})
+        #     else:
+        #         print(f"test/person: {np.mean(mAP[0])}")
+        #         print(f"test/large_vehicle: {np.mean(mAP[1])}")
+        #         print(f"test/car: {np.mean(mAP[2])}")
+        #         print(f"test/mAP: {np.mean(np.array(mAP[0] + mAP[1] + mAP[2]) / 3)}")
+
+
         for iter_num, data in enumerate(tqdm(dataloader_train)):
-            try:
-                classification_loss, regression_loss = retinanet([data['img_rgb'],data['img'].cuda().float(),data['annot']])
+            # try:
+            # classification_loss, regression_loss = retinanet([data['img_rgb'],data['img'].cuda().float(),data['annot']])
+            classification, regression, anchors, labels = retinanet([data['img_rgb'], data['img'].cuda().float(), data['annot']])
+            classification_loss, regression_loss = focal_loss(classification, regression, anchors, labels)
 
-                classification_loss = classification_loss.mean()
-                regression_loss = regression_loss.mean()
+            classification_loss = classification_loss.mean()
+            regression_loss = regression_loss.mean()
 
-                loss = classification_loss + regression_loss
+            loss = classification_loss + regression_loss
 
-                if bool(loss == 0):
-                    continue
-
-                loss.backward()
-
-                torch.nn.utils.clip_grad_norm_(retinanet.parameters(), 0.1)
-
-                num_batches += 1
-                if num_batches == 8:  # optimize every 5 mini-batches
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    num_batches = 0
-
-
-                loss_hist.append(float(loss))
-
-
-                if iter_num % 500 ==0:
-                    print(
-                        '[sensor fusion homographic] [{}], Epoch: {} | Iteration: {} | Classification loss: {:1.5f} | Regression loss: {:1.5f} | Running loss: {:1.5f}'.format(
-                            time_since(start), epoch_num, iter_num, float(classification_loss), float(regression_loss), np.mean(loss_hist)))
-                    epoch_loss.append(np.mean(loss_hist))
-
-                if parser.wandb:
-                    wandb_logger.wandb.log({'train/cls loss': classification_loss.detach()})
-                    wandb_logger.wandb.log({'train/reg loss': regression_loss.detach()})
-                    wandb_logger.wandb.log({'train/total loss': loss.detach()})
-
-                del classification_loss
-                del regression_loss
-            except Exception as e:
-                print(e)
+            if bool(loss == 0):
                 continue
+
+            loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(retinanet.parameters(), 0.1)
+
+            num_batches += 1
+            if num_batches == 8:  # optimize every 5 mini-batches
+                optimizer.step()
+                optimizer.zero_grad()
+                num_batches = 0
+
+
+            loss_hist.append(float(loss))
+
+
+            if iter_num % 500 ==0:
+                print(
+                    '[sensor fusion homographic] [{}], Epoch: {} | Iteration: {} | Classification loss: {:1.5f} | Regression loss: {:1.5f} | Running loss: {:1.5f}'.format(
+                        time_since(start), epoch_num, iter_num, float(classification_loss), float(regression_loss), np.mean(loss_hist)))
+                epoch_loss.append(np.mean(loss_hist))
+
+            if parser.wandb:
+                wandb_logger.wandb.log({'train/cls loss': classification_loss.detach()})
+                wandb_logger.wandb.log({'train/reg loss': regression_loss.detach()})
+                wandb_logger.wandb.log({'train/total loss': loss.detach()})
+
+            del classification_loss
+            del regression_loss
+            # except Exception as e:
+            #     print(e)
+            #     continue
 
         # if parser.dataset == 'coco':
         #
@@ -244,7 +306,7 @@ def main(args=None):
 
         with torch.no_grad():
             if parser.event_type == 'raw':
-                mAP = csv_eval.evaluate_coco_map(dataloader_test, retinanet, save_detection=False, save_folder=save_dir,
+                mAP = csv_eval.evaluate_coco_map(dataset_test, retinanet, save_detection=False, save_folder=save_dir,
                                                  save_path=save_dir, event_type=parser.event_type)
             else:
                 mAP = csv_eval.evaluate_coco_map(dataset_test, retinanet, save_detection=False, save_folder=save_dir,

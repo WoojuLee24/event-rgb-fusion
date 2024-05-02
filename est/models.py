@@ -233,10 +233,7 @@ class ESTNet(nn.Module):
                  activation=nn.LeakyReLU(negative_slope=0.1),
                  value_layer="ValueLayer",
                  projection=None,
-                 pretrained=True,
-                 epsilon=4,
-                 num_iter=2,
-                 step_size=0.5):
+                 pretrained=True):
 
         nn.Module.__init__(self)
         self.quantization_layer = QuantizationLayer(voxel_dimension, mlp_layers, activation, value_layer, projection)
@@ -246,9 +243,6 @@ class ESTNet(nn.Module):
         self.voxel_dimension = voxel_dimension
         self.crop_dimension = crop_dimension
         self.num_classes = num_classes
-        self.epsilon = epsilon
-        self.num_iter = num_iter
-        self.step_size = step_size
         self.projection = projection
 
         # replace fc layer and first convolutional layer

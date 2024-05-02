@@ -7,6 +7,7 @@ from retinanet.utils import BasicBlock, Bottleneck, BBoxTransform, ClipBoxes
 from retinanet.anchors import Anchors
 from retinanet import losses
 from est.models import ESTNet
+from retinanet.adv_model import AdvResNet_fpn_fusion_est
 import random
 
 model_urls = {
@@ -978,6 +979,8 @@ def resnet50(num_classes, fusion_model, pretrained=False, **kwargs):
         model = ResNet_fpn_fusion(num_classes, Bottleneck, [3, 4, 6, 3], **kwargs)
     if fusion_model == 'fpn_fusion_est':
         model = ResNet_fpn_fusion_est(num_classes, Bottleneck, [3, 4, 6, 3], **kwargs)
+    if fusion_model == 'adv_fpn_fusion_est':
+        model = AdvResNet_fpn_fusion_est(num_classes, Bottleneck, [3, 4, 6, 3], **kwargs)
     if fusion_model == 'event':
         model = ResNet(num_classes, Bottleneck, [3, 4, 6, 3], **kwargs)
     if fusion_model == 'rgb':

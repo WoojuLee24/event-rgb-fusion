@@ -316,7 +316,7 @@ class CSVDataset_gray(Dataset):
 
     def __getitem__(self, idx):
 
-        img,img_rgb = self.load_image(idx)
+        img, img_rgb = self.load_image(idx)
         annot = self.load_annotations(idx)
         sample = {'img': img,'img_rgb': img_rgb, 'annot': annot}
         if self.transform:
